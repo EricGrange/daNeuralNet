@@ -3,3 +3,5 @@ __history
 *.local
 *.dsk
 *.identcache
+*.stat
+*.~dsk

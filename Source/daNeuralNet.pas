@@ -65,6 +65,7 @@ type
          procedure Build(options : TdaNeuralNetBuildOptions); virtual; abstract;
          procedure RandomizeWeights; virtual; abstract;
          procedure ApplyInput(const data : TdaNNSingleArray); virtual;
+         procedure ApplyInputBytes(const data : TBytes); virtual;
          procedure Compute; virtual; abstract;
          procedure AdjustWeights; virtual; abstract;
 
@@ -224,6 +225,17 @@ end;
 procedure TdaNeuralNetLayer.ApplyInput(const data : TdaNNSingleArray);
 begin
    Assert(False, ClassName + ' does not support applying input');
+end;
+
+// ApplyInputBytes
+//
+procedure TdaNeuralNetLayer.ApplyInputBytes(const data : TBytes);
+begin
+   var dataSingle : TdaNNSingleArray;
+   SetLength(dataSingle, Length(data));
+   for var i := 0 to High(data) do
+      dataSingle[i] := data[i] * (1/255);
+   ApplyInput(dataSingle);
 end;
 
 // ------------------

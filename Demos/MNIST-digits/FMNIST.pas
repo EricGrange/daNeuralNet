@@ -7,7 +7,7 @@ interface
 uses
   Winapi.Windows, Winapi.Messages, System.SysUtils, System.Variants, System.Classes, Vcl.Graphics,
   Vcl.Controls, Vcl.Forms, Vcl.Dialogs, System.Zip, System.Threading, System.Diagnostics,
-  daNeuralNet, daNeuralNet.Dense,
+  daNeuralNet, daNeuralNet.Dense, daNeuralNet.Math,
   VclTee.TeeGDIPlus, VCLTee.TeEngine, VCLTee.Series, Vcl.ExtCtrls,
   VCLTee.TeeProcs, VCLTee.Chart, Vcl.StdCtrls;
 
@@ -20,8 +20,9 @@ type
     Chart1: TChart;
     Label1: TLabel;
     BUReset: TButton;
-    Series1: TAreaSeries;
+    SETestScore: TAreaSeries;
     TeeGDIPlus1: TTeeGDIPlus;
+    SETrainScore: TLineSeries;
     procedure FormCreate(Sender: TObject);
     procedure BUOneEpochClick(Sender: TObject);
     procedure ListBoxClick(Sender: TObject);
@@ -53,6 +54,8 @@ end;
 
 procedure TFormMNIST.FormCreate(Sender: TObject);
 begin
+   daNNMathSelfTest;
+
    FLoadTask := TTask.Run(
       procedure
       begin
@@ -65,6 +68,7 @@ begin
    FNeuralNet.AddLayer(TdaNNDenseLayer.Create(60, daNNActivation.ReLu, 0.02, 0));
    FNeuralNet.AddLayer(TdaNNDenseLayer.Create(10, daNNActivation.Sigmoid, 0.2, 0));
    FNeuralNet.Build([nnboForTraining]);
+   RandSeed := 0;
    FNeuralNet.RandomizeWeights;
 end;
 
@@ -75,15 +79,31 @@ begin
 
    var sw := TStopwatch.StartNew;
    FNeuralNet.TrainSet(FTrainImages, FTrainOutputs);
-   var t := sw.ElapsedMilliseconds;
+   var tTraining := sw.ElapsedMilliseconds;
 
    ListBox.Items.BeginUpdate;
+
+   sw := TStopwatch.StartNew;
+
+   var trainErrors := 0;
+   for var i := 0 to High(FTrainImages) do begin
+      var output := FNeuralNet.Run(FTrainImages[i]);
+      var digit := 0;
+      for var k := 1 to output.High do
+         if output[k] > output[digit] then
+            digit := k;
+      if digit <> FTrainLabels[i] then begin
+         Inc(trainErrors);
+      end;
+   end;
+
+   var tRun := sw.ElapsedMilliseconds;
 
    var errors := 0;
    for var i := 0 to High(FTestImages) do begin
       var output := FNeuralNet.Run(FTestImages[i]);
       var digit := 0;
-      for var k := 1 to High(output) do
+      for var k := 1 to output.High do
          if output[k] > output[digit] then
             digit := k;
       if digit <> FTestLabels[i] then begin
@@ -100,9 +120,11 @@ begin
 
    ListBox.Items.EndUpdate;
 
-   Label1.Caption := Format('%.03f sec', [ t * 0.001 ]) + #13#10
-                   + Format('Errors : %d  ( %0.2f %% )', [ errors, 100*errors/Length(FTestImages) ]);
-   Series1.Add(errors);
+   Label1.Caption := Format('Training %.03f sec  /  Running %0.3f sec', [ tTraining * 0.001, tRun * 0.001 ]) + #13#10
+                   + Format('Train Set Errors : %d  ( %0.2f %% )', [ trainErrors, 100*trainErrors/Length(FTrainImages) ]) + #13#10
+                   + Format('Test Set Errors : %d  ( %0.2f %% )', [ errors, 100*errors/Length(FTestImages) ]);
+   SETestScore.Add(errors * 100 / Length(FTestImages));
+   SETrainScore.Add(trainErrors * 100 / Length(FTrainImages));
 
    if errors > 0 then begin
       ListBox.ItemIndex := 0;
@@ -135,7 +157,7 @@ procedure TFormMNIST.LoadDatasets;
       var nb := (Length(bytes)-p) div (28*28);
       SetLength(dataset, nb);
       for var i := 0 to nb - 1 do begin
-         SetLength(dataset[i], 28*28);
+         dataset[i] := NewSingleArray(28*28);
          var img := dataset[i];
          for var j := 0 to 28*28-1 do
             img[j] := bytes[p+j] / 255;
@@ -151,7 +173,7 @@ procedure TFormMNIST.LoadDatasets;
       SetLength(labels, nb);
       for var i := 0 to nb - 1 do begin
          labels[i] := bytes[i+8];
-         SetLength(dataset[i], 10);
+         dataset[i] := NewSingleArray(10);
          dataset[i][labels[i]] := 1;
       end;
    end;

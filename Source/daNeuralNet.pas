@@ -20,29 +20,27 @@ interface
 
 {$i daNN.inc}
 
-uses SysUtils;
+uses SysUtils, daNeuralNet.Math;
 
 type
 
    TdaNNBooleanArray = array of Boolean;
-   TdaNNSingleArray = array of Single;
-   TdaNNSingleStaticArray = array [0..(MaxInt shr 2)-1] of Single;
-   PdaNNSingle = ^TdaNNSingleStaticArray;
 
-   TdaNNDataset = array of TdaNNSingleArray;
+   TdaNNDataset = array of ISingleArray;
 
    IdaNNActivationFunction = interface
       ['{7A572866-F8EA-4887-B358-B63BBF0F2B80}']
       function Activation(v : Single) : Single;
       function Derivation(v : Single) : Single;
-      procedure CalculateDeltas(const outputErrors, outputs : TdaNNSingleArray; var deltas : TdaNNSingleArray);
+      procedure CalculateDeltas(const outputErrors, outputs : ISingleArray; var deltas : ISingleArray);
    end;
 
    IdaNNWriter = interface
       ['{78F9F5DF-3766-4A4C-AAE8-6E81D7BC149B}']
       procedure BeginSet(const name : String);
       procedure EndSet;
-      procedure WriteArray(const data : TdaNNSingleArray);
+      procedure WriteArray(const data : ISingleArray; offset : Integer = 0; count : Integer = MaxInt);
+      procedure WriteMatrix(const data : ISingleMatrix);
    end;
 
    TdaNeuralNet = class;
@@ -56,7 +54,7 @@ type
          FNext :  TdaNeuralNetLayer;
          FModel : TdaNeuralNet;
 
-         FOutputs : TdaNNSingleArray;
+         FOutputs : ISingleArray;
          FSize : Integer;
 
       protected
@@ -64,7 +62,7 @@ type
 
          procedure Build(options : TdaNeuralNetBuildOptions); virtual; abstract;
          procedure RandomizeWeights; virtual; abstract;
-         procedure ApplyInput(const data : TdaNNSingleArray); virtual;
+         procedure ApplyInput(const data : ISingleArray); virtual;
          procedure ApplyInputBytes(const data : TBytes); virtual;
          procedure Compute; virtual; abstract;
          procedure AdjustWeights; virtual; abstract;
@@ -78,18 +76,18 @@ type
          property IsInputLayer : Boolean read FIsInputLayer;
 
          property Size : Integer read FSize;
-         property Outputs : TdaNNSingleArray read FOutputs;
+         property Outputs : ISingleArray read FOutputs;
 
          procedure ExportWeights(const writer : IdaNNWriter); virtual; abstract;
 
-         procedure CalculateDeltas(const outputErrors : TdaNNSingleArray); virtual; abstract;
+         procedure CalculateDeltas(const outputErrors : ISingleArray); virtual; abstract;
    end;
 
    TdaNNInputLayer = class (TdaNeuralNetLayer)
       protected
          procedure Build(options : TdaNeuralNetBuildOptions); override;
          procedure RandomizeWeights; override;
-         procedure ApplyInput(const data : TdaNNSingleArray); override;
+         procedure ApplyInput(const data : ISingleArray); override;
          procedure Compute; override;
          procedure AdjustWeights; override;
 
@@ -97,7 +95,7 @@ type
          constructor Create(aSize : Integer);
 
          procedure ExportWeights(const writer : IdaNNWriter); override;
-         procedure CalculateDeltas(const outputErrors : TdaNNSingleArray); override;
+         procedure CalculateDeltas(const outputErrors : ISingleArray); override;
    end;
 
    TdaNeuralNetState = ( nnsBuilt );
@@ -124,9 +122,9 @@ type
 
          procedure RandomizeWeights; virtual;
 
-         function Run(const data : TdaNNSingleArray) : TdaNNSingleArray; virtual;
+         function Run(const data : ISingleArray) : ISingleArray; virtual;
 
-         function Train(const input, target : TdaNNSingleArray) : Double; virtual;
+         function Train(const input, target : ISingleArray) : Double; virtual;
          procedure TrainSet(const inputSet, targetSet : TdaNNDataset); virtual;
 
          property States : TdaNeuralNetStates read FStates;
@@ -154,16 +152,13 @@ implementation
 // ------------------------------------------------------------------
 // ------------------------------------------------------------------
 
-uses daNeuralNet.Activation, daNeuralNet.Math;
+uses daNeuralNet.Activation;
 
 // MSE
 //
-function MSE(const errors : TdaNNSingleArray) : Double;
+function MSE(const errors : ISingleArray) : Double;
 begin
-   Result := 0;
-   for var i := 0 to High(errors) do
-      Result := Result + Sqr(errors[i]);
-   Result := Result / Length(errors);
+   Result := errors.SumOfSquares / errors.Length;
 end;
 
 // ------------------
@@ -217,12 +212,12 @@ constructor TdaNeuralNetLayer.Create(aSize : Integer);
 begin
    inherited Create;
    FSize := aSize;
-   SetLength(FOutputs, Size);
+   FOutputs := NewSingleArray(Size);
 end;
 
 // ApplyInput
 //
-procedure TdaNeuralNetLayer.ApplyInput(const data : TdaNNSingleArray);
+procedure TdaNeuralNetLayer.ApplyInput(const data : ISingleArray);
 begin
    Assert(False, ClassName + ' does not support applying input');
 end;
@@ -231,8 +226,7 @@ end;
 //
 procedure TdaNeuralNetLayer.ApplyInputBytes(const data : TBytes);
 begin
-   var dataSingle : TdaNNSingleArray;
-   SetLength(dataSingle, Length(data));
+   var dataSingle := NewSingleArray(Length(data));
    for var i := 0 to High(data) do
       dataSingle[i] := data[i] * (1/255);
    ApplyInput(dataSingle);
@@ -290,7 +284,7 @@ end;
 
 // Run
 //
-function TdaNeuralNet.Run(const data : TdaNNSingleArray) : TdaNNSingleArray;
+function TdaNeuralNet.Run(const data : ISingleArray) : ISingleArray;
 begin
    var layer := InputLayer;
    layer.ApplyInput(data);
@@ -303,10 +297,10 @@ end;
 
 // Train
 //
-function TdaNeuralNet.Train(const input, target : TdaNNSingleArray) : Double;
+function TdaNeuralNet.Train(const input, target : ISingleArray) : Double;
 begin
-   Assert(Length(input) = InputLayer.Size, 'Input size does not match input layer size');
-   Assert(Length(target) = OutputLayer.Size, 'Output size does not match output layer size');
+   Assert(input.Length = InputLayer.Size, 'Input size does not match input layer size');
+   Assert(target.Length = OutputLayer.Size, 'Output size does not match output layer size');
 
    Run(input);
 
@@ -373,10 +367,10 @@ end;
 
 // ApplyInput
 //
-procedure TdaNNInputLayer.ApplyInput(const data : TdaNNSingleArray);
+procedure TdaNNInputLayer.ApplyInput(const data : ISingleArray);
 begin
-   Assert(Length(data) = Size);
-   System.Move(data[0], Outputs[0], Size*SizeOf(Single));
+   Assert(data.Length = Size);
+   System.Move(data.Ptr[0], Outputs.Ptr[0], Size*SizeOf(Single));
 end;
 
 // Compute
@@ -388,7 +382,7 @@ end;
 
 // CalculateDeltas
 //
-procedure TdaNNInputLayer.CalculateDeltas(const outputErrors : TdaNNSingleArray);
+procedure TdaNNInputLayer.CalculateDeltas(const outputErrors : ISingleArray);
 begin
    // nothing
 end;

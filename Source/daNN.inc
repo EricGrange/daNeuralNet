@@ -18,12 +18,11 @@
 
 {global compiler options}
 
-{$A+} // align on
-{$B-} // BoolEval off
-{$X+} // extended syntax
-{$H+} // long strings
-{$Q-} // overflow checks off
-{$J-} // assignable typed constants off
+{$BOOLEVAL OFF}
+{$EXTENDEDSYNTAX ON}
+{$OVERFLOWCHECKS OFF}
+{$WRITEABLECONST OFF}
+{$OPTIMIZATION ON}
 
 {$EXCESSPRECISION OFF}
 

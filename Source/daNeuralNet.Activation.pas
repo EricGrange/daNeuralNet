@@ -20,14 +20,14 @@ unit daNeuralNet.Activation;
 
 interface
 
-uses System.Math, daNeuralNet;
+uses System.Math, daNeuralNet, daNeuralNet.Math;
 
 type
 
    TdaNNActivationSigmoid = class (TInterfacedObject, IdaNNActivationFunction)
       function Activation(v : Single) : Single;
       function Derivation(v : Single) : Single;
-      procedure CalculateDeltas(const outputErrors, outputs : TdaNNSingleArray; var deltas : TdaNNSingleArray);
+      procedure CalculateDeltas(const outputErrors, outputs : ISingleArray; var deltas : ISingleArray);
    end;
 
    TdaNNActivationReLu = class (TInterfacedObject, IdaNNActivationFunction)
@@ -35,19 +35,13 @@ type
       constructor Create(leakyAlpha : Single);
       function Activation(v : Single) : Single;
       function Derivation(v : Single) : Single;
-      procedure CalculateDeltas(const outputErrors, outputs : TdaNNSingleArray; var deltas : TdaNNSingleArray);
+      procedure CalculateDeltas(const outputErrors, outputs : ISingleArray; var deltas : ISingleArray);
    end;
 
    TdaNNActivationSoftPlus = class (TInterfacedObject, IdaNNActivationFunction)
       function Activation(v : Single) : Single;
       function Derivation(v : Single) : Single;
-      procedure CalculateDeltas(const outputErrors, outputs : TdaNNSingleArray; var deltas : TdaNNSingleArray);
-   end;
-
-   TdaNNActivationTanH = class (TInterfacedObject, IdaNNActivationFunction)
-      function Activation(v : Single) : Single;
-      function Derivation(v : Single) : Single;
-      procedure CalculateDeltas(const outputErrors, outputs : TdaNNSingleArray; var deltas : TdaNNSingleArray);
+      procedure CalculateDeltas(const outputErrors, outputs : ISingleArray; var deltas : ISingleArray);
    end;
 
 // ------------------------------------------------------------------
@@ -78,11 +72,14 @@ end;
 
 // CalculateDeltas
 //
-procedure TdaNNActivationSigmoid.CalculateDeltas(const outputErrors, outputs : TdaNNSingleArray; var deltas : TdaNNSingleArray);
+procedure TdaNNActivationSigmoid.CalculateDeltas(const outputErrors, outputs : ISingleArray; var deltas : ISingleArray);
 begin
-   for var i := 0 to High(deltas) do begin
-      var o := outputs[i];
-      deltas[i] := outputErrors[i] * o * (1 - o);
+   var pOutputs := outputs.Ptr;
+   var pDeltas := deltas.Ptr;
+   var pOutputErrors := outputErrors.Ptr;
+   for var i := 0 to deltas.High do begin
+      var o := pOutputs[i];
+      pDeltas[i] := pOutputErrors[i] * o * (1 - o);
    end;
 end;
 
@@ -118,12 +115,15 @@ end;
 
 // CalculateDeltas
 //
-procedure TdaNNActivationReLu.CalculateDeltas(const outputErrors, outputs : TdaNNSingleArray; var deltas : TdaNNSingleArray);
+procedure TdaNNActivationReLu.CalculateDeltas(const outputErrors, outputs : ISingleArray; var deltas : ISingleArray);
 begin
-   for var i := 0 to High(deltas) do begin
-      if outputs[i] > 0 then
-         deltas[i] := outputErrors[i]
-      else deltas[i] := outputErrors[i] * FAlpha;
+   var pOutputs := outputs.Ptr;
+   var pDeltas := deltas.Ptr;
+   var pOutputErrors := outputErrors.Ptr;
+   for var i := 0 to deltas.High do begin
+      if pOutputs[i] > 0 then
+         pDeltas[i] := pOutputErrors[i]
+      else pDeltas[i] := pOutputErrors[i] * FAlpha;
    end;
 end;
 
@@ -147,37 +147,13 @@ end;
 
 // CalculateDeltas
 //
-procedure TdaNNActivationSoftPlus.CalculateDeltas(const outputErrors, outputs : TdaNNSingleArray; var deltas : TdaNNSingleArray);
+procedure TdaNNActivationSoftPlus.CalculateDeltas(const outputErrors, outputs : ISingleArray; var deltas : ISingleArray);
 begin
-   for var i := 0 to High(deltas) do begin
-      deltas[i] := outputErrors[i] / (1 + Exp(-outputs[i]));
-   end;
-end;
-
-// ------------------
-// ------------------ TdaNNActivationTanH ------------------
-// ------------------
-
-// Activation
-//
-function TdaNNActivationTanH.Activation(v : Single) : Single;
-begin
-   Result := Tanh(v);
-end;
-
-// Derivation
-//
-function TdaNNActivationTanH.Derivation(v : Single) : Single;
-begin
-   Result := 1 - Sqr(v);
-end;
-
-// CalculateDeltas
-//
-procedure TdaNNActivationTanH.CalculateDeltas(const outputErrors, outputs : TdaNNSingleArray; var deltas : TdaNNSingleArray);
-begin
-   for var i := 0 to High(deltas) do begin
-      deltas[i] := outputErrors[i] * (1 - Sqr(outputs[i]));
+   var pOutputs := outputs.Ptr;
+   var pDeltas := deltas.Ptr;
+   var pOutputErrors := outputErrors.Ptr;
+   for var i := 0 to deltas.High do begin
+      pDeltas[i] := pOutputErrors[i] / (1 + Exp(-pOutputs[i]));
    end;
 end;
 

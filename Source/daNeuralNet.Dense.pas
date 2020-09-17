@@ -20,7 +20,7 @@ unit daNeuralNet.Dense;
 
 interface
 
-uses daNeuralNet;
+uses daNeuralNet, daNeuralNet.Math;
 
 type
    TdaNNDenseLayer = class;
@@ -28,12 +28,13 @@ type
    TdaNNDenseLayer = class (TdaNeuralNetLayer)
       private
          FActivationFn : IdaNNActivationFunction;
-         FBiases : TdaNNSingleArray;
-         FWeights : array of TdaNNSingleArray;
+         FBiases : ISingleArray;
+         FWeights : ISingleMatrix;
+         FWeightsPtr : array of PSingleArray;
 
-         FDeltas : TdaNNSingleArray;
-         FInputErrors : TdaNNSingleArray;
-         FChanges : array of TdaNNSingleArray;
+         FDeltas : ISingleArray;
+         FInputErrors : ISingleArray;
+         FChanges : array of ISingleArray;
          FLearningRate : Single;
          FMomentum : Single;
 
@@ -54,7 +55,7 @@ type
                             aLearningRate, aMomentum : Single);
 
          procedure ExportWeights(const writer : IdaNNWriter); override;
-         procedure CalculateDeltas(const outputErrors : TdaNNSingleArray); override;
+         procedure CalculateDeltas(const outputErrors : ISingleArray); override;
 
          property ActivationFn : IdaNNActivationFunction read FActivationFn write FActivationFn;
          property LearningRate : Single read FLearningRate write FLearningRate;
@@ -70,8 +71,6 @@ implementation
 // ------------------------------------------------------------------
 // ------------------------------------------------------------------
 // ------------------------------------------------------------------
-
-uses daNeuralNet.Math;
 
 // ------------------
 // ------------------ TdaNNDenseLayer ------------------
@@ -94,8 +93,7 @@ end;
 procedure TdaNNDenseLayer.ExportWeights(const writer : IdaNNWriter);
 begin
    writer.BeginSet('Weights');
-   for var i := 0 to Size-1 do
-      writer.WriteArray(FWeights[i]);
+      writer.WriteMatrix(FWeights);
    writer.EndSet;
    writer.BeginSet('Biases');
       writer.WriteArray(FBiases);
@@ -108,20 +106,21 @@ procedure TdaNNDenseLayer.Build(options : TdaNeuralNetBuildOptions);
 begin
    Assert(Previous <> nil, ClassName + ' requires a previous layer');
 
-   SetLength(FBiases, Size);
-   SetLength(FWeights, Size);
+   FBiases := NewSingleArray(Size);
+   FWeights := NewSingleMatrix(Previous.Size, Size);
+   SetLength(FWeightsPtr, Size);
    for var i := 0 to Size-1 do begin
-      SetLength(FWeights[i], Previous.Size);
+      FWeightsPtr[i] := FWeights.RowPtr(i);
    end;
 
    if nnboForTraining in options then begin
-      SetLength(FDeltas, Size);
-      SetLength(FInputErrors, Previous.Size);
+      FDeltas := NewSingleArray(Size);
+      FInputErrors := NewSingleArray(Previous.Size);
 
       if Momentum <> 0 then begin
          SetLength(FChanges, Size);
          for var i := 0 to Size-1 do
-            SetLength(FChanges[i], Previous.Size);
+            FChanges[i] := NewSingleArray(Previous.Size);
       end;
    end;
 end;
@@ -135,7 +134,7 @@ begin
    for var j := 0 to Size-1 do begin
       FBiases[j] := 0;
       for var i := 0 to Previous.Size-1 do
-         FWeights[j][i] := (Random - 0.5 ) * r;
+         FWeightsPtr[j][i] := (Random - 0.5 ) * r;
    end;
 end;
 
@@ -143,27 +142,30 @@ end;
 //
 procedure TdaNNDenseLayer.Compute;
 begin
-   var inputs := PSingle(Previous.Outputs);
+   FWeights.MultiplyVector(Previous.Outputs, Self.Outputs);
+
+   var outputsPtr := Outputs.Ptr;
+   var biasesPtr := FBiases.Ptr;
    for var node := 0 to Size-1 do begin
-      Outputs[node] := ActivationFn.Activation(
-           FBiases[node]
-         + daNNDotProduct(PSingle(FWeights[node]), inputs, Previous.Size)
-      );
+      outputsPtr[node] := ActivationFn.Activation(
+           biasesPtr[node] + outputsPtr[node]
+         );
    end;
 end;
 
 // CalculateDeltas
 //
-procedure TdaNNDenseLayer.CalculateDeltas(const outputErrors : TdaNNSingleArray);
+procedure TdaNNDenseLayer.CalculateDeltas(const outputErrors : ISingleArray);
 begin
    ActivationFn.CalculateDeltas(outputErrors, Outputs, FDeltas);
 
    if (Previous = nil) or Previous.IsInputLayer then Exit;
 
+   var pDeltas := FDeltas.Ptr;
    for var node := 0 to Previous.Size-1 do begin
       var error : Double := 0.0;
-      for var k := 0 to High(FDeltas) do
-         error := error + FDeltas[k] * FWeights[k][node];
+      for var k := 0 to Size-1 do
+         error := error + pDeltas[k] * FWeightsPtr[k][node];
       FInputErrors[node] := error;
    end;
 
@@ -184,13 +186,14 @@ end;
 procedure TdaNNDenseLayer.AdjustWeightsDirect;
 begin
    var rate := LearningRate * Model.LearningRateScale;
-   var incoming := Previous.Outputs;
+   var incoming := Previous.Outputs.Ptr;
+   var biases := FBiases.Ptr;
    for var node := 0 to Size-1 do begin
-      var delta := rate * FDeltas[node];
+      var delta : Single := rate * FDeltas[node];
       if delta <> 0 then begin
-         var weights := FWeights[node];
-         daNNAddScaledOperand(PSingle(weights), PSingle(incoming), delta, Length(incoming));
-         FBiases[node] := FBiases[node] + delta;
+         var weights := FWeightsPtr[node];
+         daNNAddScaledOperand(weights, incoming, delta, Previous.Size);
+         biases[node] := biases[node] + delta;
       end;
    end;
 end;
@@ -202,10 +205,10 @@ begin
    var rate := LearningRate * Model.LearningRateScale;
    var incoming := Previous.Outputs;
    for var node := 0 to Size-1 do begin
-      var delta := rate * FDeltas[node];
-      var weights := FWeights[node];
+      var delta : Single := rate * FDeltas[node];
+      var weights := FWeightsPtr[node];
       var changes := FChanges[node];
-      for var k := 0 to High(incoming) do begin
+      for var k := 0 to incoming.High do begin
          var change := delta * incoming[k] + Momentum * changes[k];
          changes[k] := change;
          weights[k] := weights[k] + change;

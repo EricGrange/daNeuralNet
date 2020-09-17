@@ -2,7 +2,7 @@ object FormMNIST: TFormMNIST
   Left = 0
   Top = 0
   Caption = 'MNIST digits'
-  ClientHeight = 430
+  ClientHeight = 462
   ClientWidth = 1008
   Color = clBtnFace
   Font.Charset = DEFAULT_CHARSET
@@ -14,12 +14,12 @@ object FormMNIST: TFormMNIST
   OnCreate = FormCreate
   DesignSize = (
     1008
-    430)
+    462)
   PixelsPerInch = 96
   TextHeight = 15
   object Image: TImage
     Left = 248
-    Top = 88
+    Top = 112
     Width = 105
     Height = 105
     Proportional = True
@@ -28,7 +28,7 @@ object FormMNIST: TFormMNIST
   object Splitter1: TSplitter
     Left = 0
     Top = 0
-    Height = 430
+    Height = 462
     ExplicitLeft = 696
     ExplicitTop = 88
     ExplicitHeight = 100
@@ -36,9 +36,9 @@ object FormMNIST: TFormMNIST
   object Label1: TLabel
     Left = 17
     Top = 56
-    Width = 34
+    Width = 9
     Height = 15
-    Caption = 'Label1'
+    Caption = '...'
   end
   object BUOneEpoch: TButton
     Left = 17
@@ -51,19 +51,20 @@ object FormMNIST: TFormMNIST
   end
   object ListBox: TListBox
     Left = 17
-    Top = 88
+    Top = 112
     Width = 225
-    Height = 333
+    Height = 342
     Anchors = [akLeft, akTop, akBottom]
     ItemHeight = 15
     TabOrder = 1
     OnClick = ListBoxClick
+    ExplicitHeight = 310
   end
   object Chart1: TChart
     Left = 376
     Top = 8
     Width = 617
-    Height = 413
+    Height = 445
     Legend.Visible = False
     MarginBottom = 0
     MarginLeft = 0
@@ -76,12 +77,14 @@ object FormMNIST: TFormMNIST
     BevelOuter = bvNone
     TabOrder = 2
     Anchors = [akLeft, akTop, akRight, akBottom]
+    ExplicitHeight = 413
     DefaultCanvas = 'TTeeCanvas3D'
     ColorPaletteIndex = 13
-    object Series1: TAreaSeries
+    object SETestScore: TAreaSeries
       Gradient.EndColor = 16768220
       Gradient.Visible = True
       SeriesColor = clAqua
+      AreaChartBrush.Color = clGray
       AreaChartBrush.BackColor = clDefault
       AreaChartBrush.Gradient.EndColor = 16768220
       AreaChartBrush.Gradient.Visible = True
@@ -90,6 +93,16 @@ object FormMNIST: TFormMNIST
       Pointer.InflateMargins = True
       Pointer.Style = psRectangle
       Pointer.Visible = False
+      XValues.Name = 'X'
+      XValues.Order = loAscending
+      YValues.Name = 'Y'
+      YValues.Order = loNone
+    end
+    object SETrainScore: TLineSeries
+      Brush.BackColor = clDefault
+      LinePen.Width = 2
+      Pointer.InflateMargins = True
+      Pointer.Style = psRectangle
       XValues.Name = 'X'
       XValues.Order = loAscending
       YValues.Name = 'Y'

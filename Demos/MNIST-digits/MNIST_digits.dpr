@@ -2,7 +2,8 @@ program MNIST_digits;
 
 uses
   Vcl.Forms,
-  FMNIST in 'FMNIST.pas' {FormMNIST};
+  FMNIST in 'FMNIST.pas' {FormMNIST},
+  daNeuralNet.JIT in '..\..\Source\daNeuralNet.JIT.pas';
 
 {$R *.res}
 

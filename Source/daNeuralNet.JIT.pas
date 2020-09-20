@@ -62,59 +62,71 @@ begin
    Result := nnJIT;
    var jit := nnJIT.Buffer;
 
+   var useSimd := False;
+   var majorLoopStep := 0;
+   var tailOffset := 0;
+
    jit._xorps_reg_reg(xmm0, xmm0);
 
-   var useSimd := (nb >= 8);
-   var majorLoop := nb div (4*7);
+   if nb >= 8 then begin
+      majorLoopStep := 8;
+      jit._xorps_reg_reg(xmm2, xmm2);
+   end;
 
-   if majorLoop > 1 then
-      jit._mov_reg_dword(gprEAX, majorLoop);
+   if majorLoopStep > 0 then begin
 
-   var jumpRef := jit.Position;
+      useSimd := True;
 
-   while useSimd and (nb >= 4) do begin
-      jit._movaps_reg_ptr_reg(xmm1, gprRCX, 0);
+      var majorLoopCount := nb div majorLoopStep;
+
+      if majorLoopCount > 1 then
+         jit._mov_reg_dword(gprEAX, majorLoopCount);
+
+      var jumpRef := jit.Position;
+
+      jit._movups_reg_ptr_reg(xmm1, gprRCX, 0);
       jit._mulps_reg_ptr_reg(xmm1, gprRDX, 0);
       jit._addps_reg_reg(xmm0, xmm1);
-      var processed := 4;
 
-      while (nb >= processed + 4) and (processed <= 6*4) do begin
-         var xmmReg := TxmmRegister((processed shr 2) + 1);
-         jit._movaps_reg_ptr_reg(TxmmRegister(xmmReg), gprRCX, processed*SizeOf(Single));
-         jit._mulps_reg_ptr_reg(TxmmRegister(xmmReg), gprRDX, processed*SizeOf(Single));
-         jit._addps_reg_reg(xmm0, xmmReg);
-         Inc(processed, 4);
+      jit._movups_reg_ptr_reg(xmm3, gprRCX, 4*SizeOf(Single));
+      jit._mulps_reg_ptr_reg(xmm3, gprRDX, 4*SizeOf(Single));
+      jit._addps_reg_reg(xmm2, xmm3);
+
+      nb := nb mod majorLoopStep;
+
+      if majorLoopCount > 1 then begin
+         jit._add_reg_int32(gprRCX, majorLoopStep*SizeOf(Single));
+         jit._add_reg_int32(gprRDX, majorLoopStep*SizeOf(Single));
+         jit._dec(gprEAX);
+         jit._jump(flagsNZ, jumpRef-jit.Position);
+      end else begin
+         tailOffset := majorLoopStep*SizeOf(Single);
       end;
 
-      Dec(nb, processed);
-
-      if nb > 0 then begin
-         jit._add_reg_int32(gprRCX, processed*SizeOf(Single));
-         jit._add_reg_int32(gprRDX, processed*SizeOf(Single));
-      end;
-
-      if majorLoop > 1 then
-         Break;
+      jit._addps_reg_reg(xmm0, xmm2);
    end;
-   if majorLoop > 1 then begin
-      jit._dec(gprEAX);
-      jit._jump(flagsNZ, jumpRef-jit.Position);
-      Dec(nb, (majorLoop-1) * 28)
+
+   if nb >= 4 then begin
+      useSimd := True;
+      jit._movups_reg_ptr_reg(xmm4, gprRCX, tailOffset);
+      jit._mulps_reg_ptr_reg(xmm4, gprRDX, tailOffset);
+      jit._addps_reg_reg(xmm0, xmm4);
+      Inc(tailOffset, 4*SizeOf(Single));
+      nb := nb and 3;
    end;
 
    if useSimd then begin
-      jit._movshdup(xmm1, xmm0);
-      jit._addps_reg_reg(xmm0, xmm1);
-      jit._movhlps(xmm1, xmm0);
-      jit._addss(xmm0, xmm1);
+      jit._movshdup(xmm7, xmm0);
+      jit._addps_reg_reg(xmm0, xmm7);
+      jit._movhlps(xmm7, xmm0);
+      jit._addss(xmm0, xmm7);
    end;
 
-   if nb > 0 then begin
-      for var i := 0 to nb-1 do begin
-         jit._movss_reg_ptr_reg(xmm1, gprRCX, i*SizeOf(Single));//
-         jit._mulss_reg_ptr_reg(xmm1, gprRDX, i*SizeOf(Single));//
-         jit._addss(xmm0, xmm1);
-      end;
+   for var i := 0 to nb-1 do begin
+      var xmmReg := TxmmRegister(Ord(xmm1) + (i and 3));
+      jit._movss_reg_ptr_reg(xmmReg, gprRCX, tailOffset + i*SizeOf(Single));
+      jit._mulss_reg_ptr_reg(xmmReg, gprRDX, tailOffset + i*SizeOf(Single));
+      jit._addss(xmm0, xmmReg);
    end;
 
    nnJIT.Build;

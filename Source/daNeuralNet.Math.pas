@@ -17,12 +17,15 @@
 unit daNeuralNet.Math;
 
 {$i daNN.inc}
+{.$define USE_CBLAS}
 
 interface
 
 uses SysUtils, Classes;
 
 type
+   PSingle = System.PSingle;  // workaround declaration conflict between WinApi.Windows and System
+
    TSingleArray = array [0 .. MaxInt shr 3] of Single;
    PSingleArray = ^TSingleArray;
 
@@ -47,14 +50,21 @@ type
       function GetItem(col, row : Integer) : Single;
       procedure SetItem(col, row : Integer; v : Single);
       property Items[col, row : Integer] : Single read GetItem write SetItem; default;
-      function RowPtr(row : Integer) : PSingleArray;
+      function GetRowPtr(row : Integer) : PSingleArray;
+      property RowPtr[row : Integer] : PSingleArray read GetRowPtr;
 
       procedure MultiplyVector(const vector, result : ISingleArray);
    end;
 
+   TMatrixOption = ( moPacked );
+   TMatrixOptions = set of TMatrixOption;
+
+const
+   cDefaultMatrixOptions = {$ifdef USE_CBLAS} [ moPacked ] {$else} [ ] {$endif};
+
 function NewSingleArray(size : Integer) : ISingleArray;
 
-function NewSingleMatrix(colCount, rowCount : Integer) : ISingleMatrix;
+function NewSingleMatrix(colCount, rowCount : Integer; options: TMatrixOptions = cDefaultMatrixOptions) : ISingleMatrix;
 
 function  daNNDotProduct(p1, p2 : PSingleArray; nb : Integer) : Single;
 
@@ -71,12 +81,14 @@ implementation
 // ------------------------------------------------------------------
 // ------------------------------------------------------------------
 
-uses daNeuralNet.JIT;
+uses
+   {$ifdef USE_CBLAS} LibCBLAS, {$endif}
+   daNeuralNet.JIT;
 
 // daNNDotProduct
 //
 function daNNDotProduct(p1, p2 : PSingleArray; nb : Integer) : Single;
-{$if Defined(WIN64_ASM)}
+{$ifdef WIN64_ASM}
 asm
       pxor  xmm0, xmm0
       cmp   r8d, 3 + 4  // a single loop4 is not beneficial
@@ -87,7 +99,7 @@ asm
       and   r8d, 3
 
    @@loop4:
-      movaps   xmm1, [rcx]
+      movups   xmm1, [rcx]
       mulps    xmm1, [rdx]
       addps    xmm0, xmm1
 
@@ -120,66 +132,6 @@ asm
 
    @@done:
 end;
-{$elseif Defined(WIN32_ASM)}
-asm
-      pxor  xmm0, xmm0
-      cmp   ecx, 3 + 4  // a single loop4 is not beneficial
-      jle   @@tail3
-
-      push  ecx
-      shr   ecx, 2
-
-   @@loop4:
-      movaps   xmm1, [eax]
-      movaps   xmm2, [edx]
-      mulps    xmm1, xmm2
-      addps    xmm0, xmm1
-
-      add   eax, 16
-      add   edx, 16
-      dec   ecx
-      jnz   @@loop4
-
-      pshufd   xmm1, xmm0, $E
-      addps    xmm0, xmm1
-      pshufd   xmm1, xmm0, $1
-      addss    xmm0, xmm1
-
-      pop   ecx
-      and   ecx, 3
-
-   @@tail3:
-      test  ecx, ecx
-      jz    @@done
-
-   @@loop:
-      movss xmm1, [eax + ecx * 4 - 4]
-      mulss xmm1, [edx + ecx * 4 - 4]
-      addss xmm0, xmm1
-      dec   ecx
-      jnz   @@loop
-
-   @@done:
-      push  eax
-      movss [esp], xmm0
-      fld   dword ptr [esp]
-      pop   eax
-end;
-(*
-asm
-      fldz
-      test  ecx, ecx
-      jz    @@done
-
-   @@loop:
-      fld   dword ptr [eax + ecx*4 - 4]
-      fmul  dword ptr [edx + ecx*4 - 4]
-      faddp
-      dec ecx
-      jnz @@loop
-
-   @@done:
-end;*)
 {$else}
 begin
    Result := 0;
@@ -195,7 +147,7 @@ end;
 // daNNAddScaledOperand
 //
 procedure daNNAddScaledOperand(pTarget, pOperand : PSingleArray; scale : Single; nb : Integer);
-{$if Defined(WIN64_ASM)}
+{$ifdef WIN64_ASM}
 asm
       cmp   r9d, 3
       jle   @@tail3
@@ -235,70 +187,6 @@ asm
 
    @@done:
 end;
-{$elseif Defined(WIN32_ASM)}
-asm
-      push  edi
-      mov   edi, eax
-
-      movss xmm2, scale
-      mov   ecx, nb
-
-      cmp   ecx, 3
-      jle   @@tail3
-
-      mov   eax, ecx
-      shr   eax, 2
-      and   ecx, 3
-
-      shufps xmm2, xmm2, 0
-
-   @@loop4:
-      movaps   xmm0, [edi]
-      movaps   xmm1, [edx]
-      mulps    xmm1, xmm2
-      addps    xmm0, xmm1
-      movaps   [edi], xmm0
-
-      add   edi, 16
-      add   edx, 16
-      dec   eax
-      jnz   @@loop4
-
-   @@tail3:
-      test  ecx, ecx
-      jz    @@done
-
-   @@loop:
-      movss xmm0, [edi]
-      movss xmm1, [edx]
-      mulss xmm1, xmm2
-      addss xmm0, xmm1
-      movss [edi], xmm0
-      add   edi, 4
-      add   edx, 4
-      dec   ecx
-      jnz   @@loop
-
-   @@done:
-      pop   edi
-end;
-(*asm
-      fld   scale
-      test  ecx, ecx
-      jz    @@done
-
-   @@loop:
-      fld   dword ptr [eax + ecx*4 - 4]
-      fld   dword ptr [edx + ecx*4 - 4]
-      fmul  st(0), st(2)
-      faddp
-      fstp  dword ptr [eax + ecx*4 - 4]
-      dec   ecx
-      jnz   @@loop
-
-   @@done:
-      fstp st(0)
-end;*)
 {$else}
 type
    TSingleArray = array [0..MaxInt shr 3] of Single;
@@ -485,7 +373,7 @@ type
          FCompiledDotProduct : IdaNNJIT;
 
       public
-         constructor Create(colCount, rowCount : Integer);
+         constructor Create(colCount, rowCount : Integer; options: TMatrixOptions);
          destructor Destroy; override;
 
          function ColumnCount : Integer;
@@ -495,26 +383,28 @@ type
          function GetItem(col, row : Integer) : Single;
          procedure SetItem(col, row : Integer; v : Single);
          property Items[col, row : Integer] : Single read GetItem write SetItem; default;
-         function RowPtr(row : Integer) : PSingleArray;
+         function GetRowPtr(row : Integer) : PSingleArray;
 
          procedure MultiplyVector(const vector, result : ISingleArray);
    end;
 
 // NewSingleMatrix
 //
-function NewSingleMatrix(colCount, rowCount : Integer) : ISingleMatrix;
+function NewSingleMatrix(colCount, rowCount : Integer; options: TMatrixOptions = cDefaultMatrixOptions) : ISingleMatrix;
 begin
-   Result := TdaNNSingleMatrix.Create(colCount, rowCount);
+   Result := TdaNNSingleMatrix.Create(colCount, rowCount, options);
 end;
 
 // Create
 //
-constructor TdaNNSingleMatrix.Create(colCount, rowCount : Integer);
+constructor TdaNNSingleMatrix.Create(colCount, rowCount : Integer; options: TMatrixOptions);
 begin
    inherited Create;
    FColCount := colCount;
    FRowCount := rowCount;
-   FColAlignedCount := FColCount + (8 - (FColCount and 7));
+   if moPacked in options then
+      FColAlignedCount := FColCount
+   else FColAlignedCount := FColCount + (8 - (FColCount and 7));
 
    FBuffer := AllocMem(FRowCount * FColAlignedCount * SizeOf(Single) + 32);
    FData := Pointer((NativeUInt(FBuffer) + 31) and (NativeUInt(-1) - $1F));
@@ -572,9 +462,9 @@ begin
    FData[col + row * FColAlignedCount] := v;
 end;
 
-// RowPtr
+// GetRowPtr
 //
-function TdaNNSingleMatrix.RowPtr(row : Integer) : PSingleArray;
+function TdaNNSingleMatrix.GetRowPtr(row : Integer) : PSingleArray;
 begin
    Assert(NativeUInt(row) < NativeUInt(FRowCount));
    Result := @FData[ row * FColAlignedCount ];
@@ -677,6 +567,17 @@ begin
    var resultPtr := result.Ptr;
    var vectorPtr := vector.Ptr;
 
+   {$ifdef USE_CBLAS}
+
+   cblas.sgemv(cblasRowMajor, cblasNoTrans,
+               RowCount, ColumnCount, 1.0, // m, n, alpha
+               @FData[0], ColumnCount,   // a, lda
+               PSingle(vectorPtr), 1, // x, incX
+               0, // beta
+               PSingle(resultPtr), 1 // y, incY
+               );
+   {$else}
+
    var cdp := FCompiledDotProduct.Ptr;
 
    for var row := 0 to RowCount-1 do
@@ -693,6 +594,7 @@ begin
       resultPtr[row] := daNNDotProduct(vectorPtr, @FData[ row * FColAlignedCount ], ColumnCount);
       Inc(row);
    end; //}
+   {$endif}
 end;
 
 end.

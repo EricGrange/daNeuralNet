@@ -39,6 +39,7 @@ type
       function Ptr : PSingleArray;
 
       function SumOfSquares : Double;
+      procedure AddScaledVector(scale : Single; const vector : ISingleArray);
    end;
 
    ISingleMatrix = interface
@@ -54,6 +55,9 @@ type
       property RowPtr[row : Integer] : PSingleArray read GetRowPtr;
 
       procedure MultiplyVector(const vector, result : ISingleArray);
+      procedure TransposeMultiplyVector(const vector, result : ISingleArray);
+
+      procedure AddScaledVectorToRow(scale : Single; const vector : ISingleArray; row : Integer);
    end;
 
    TMatrixOption = ( moPacked );
@@ -82,8 +86,11 @@ implementation
 // ------------------------------------------------------------------
 
 uses
-   {$ifdef USE_CBLAS} LibCBLAS, {$endif}
-   daNeuralNet.JIT;
+   {$ifdef USE_CBLAS}
+   LibCBLAS
+   {$else}
+   daNeuralNet.JIT
+   {$endif};
 
 // daNNDotProduct
 //
@@ -289,6 +296,7 @@ type
          function Ptr : PSingleArray;
 
          function SumOfSquares : Double;
+         procedure AddScaledVector(scale : Single; const vector : ISingleArray);
    end;
 
 // NewSingleArray
@@ -362,6 +370,19 @@ begin
       Result := Result + FData[i];
 end;
 
+// AddScaledVector
+//
+procedure TdaNNSingleArray.AddScaledVector(scale : Single; const vector : ISingleArray);
+begin
+   Assert(vector.Length = FCount, 'Mismatched vector length');
+
+   {$ifdef USE_CBLAS}
+   CBLAS.saxpy(FCount, scale, PSingle(vector.Ptr), 1, FBuffer, 1);
+   {$else}
+   daNNAddScaledOperand(FBuffer, vector.Ptr, scale, FCount);
+   {$endif}
+end;
+
 type
    TdaNNSingleMatrix = class (TInterfacedObject, ISingleMatrix)
       private
@@ -369,8 +390,9 @@ type
          FData : PSingleArray; // base of highly-aligned array
          FRowCount, FColCount : Integer;
          FColAlignedCount : Integer;
-
-         FCompiledDotProduct : IdaNNJIT;
+         {$ifndef USE_CBLAS}
+         FCompiledMultVector : IdaNNJIT;
+         {$endif}
 
       public
          constructor Create(colCount, rowCount : Integer; options: TMatrixOptions);
@@ -386,6 +408,8 @@ type
          function GetRowPtr(row : Integer) : PSingleArray;
 
          procedure MultiplyVector(const vector, result : ISingleArray);
+         procedure TransposeMultiplyVector(const vector, result : ISingleArray);
+         procedure AddScaledVectorToRow(scale : Single; const vector : ISingleArray; row : Integer);
    end;
 
 // NewSingleMatrix
@@ -409,7 +433,9 @@ begin
    FBuffer := AllocMem(FRowCount * FColAlignedCount * SizeOf(Single) + 32);
    FData := Pointer((NativeUInt(FBuffer) + 31) and (NativeUInt(-1) - $1F));
 
-   FCompiledDotProduct := CompileDotProduct(ColumnCount);
+   {$ifndef USE_CBLAS}
+   FCompiledMultVector := CompileMultVectorAVX(ColumnCount, RowCount);
+   {$endif}
 end;
 
 // Destroy
@@ -470,99 +496,12 @@ begin
    Result := @FData[ row * FColAlignedCount ];
 end;
 
-// daNNDotProduct3
-//
-procedure daNNDotProduct3(pVec, pMat : PSingleArray; vecSize, matStride : Integer; dest : PSingleArray);
-// pVec -> rcx
-// pMat -> rdx
-// vecSize -> r8
-// matStride -> r9
-{$ifdef WIN64_ASM}
-asm
-      pxor  xmm0, xmm0
-      pxor  xmm1, xmm1
-      pxor  xmm2, xmm2
-
-      cmp   r8d, 3 + 4  // a single loop4 is not beneficial
-      jle   @@tail3
-
-      mov   eax, r8d
-      shr   eax, 2
-      and   r8d, 3
-
-   @@loop4:
-      movaps   xmm7, [rcx]
-
-      movaps   xmm3, [rdx]
-      mulps    xmm3, xmm7
-      addps    xmm0, xmm3
-
-      movaps   xmm4, [rdx + r9]
-      mulps    xmm4, xmm7
-      addps    xmm1, xmm4
-
-      movaps   xmm5, [rdx + 2*r9]
-      mulps    xmm5, xmm7
-      addps    xmm2, xmm5
-
-      add   rcx, 16
-      add   rdx, 16
-      dec   eax
-      jnz   @@loop4
-
-      movshdup xmm3, xmm0
-      addps xmm0, xmm3
-      movhlps xmm3, xmm0
-      addss xmm0, xmm3
-
-      movshdup xmm4, xmm1
-      addps xmm1, xmm4
-      movhlps xmm4, xmm1
-      addss xmm1, xmm4
-
-      movshdup xmm5, xmm2
-      addps xmm2, xmm5
-      movhlps xmm5, xmm2
-      addss xmm2, xmm5
-
-   @@tail3:
-      test  r8d, r8d
-      jz    @@done
-
-   @@loop:
-      movss xmm7, [rcx]
-
-      movss xmm3, [rdx]
-      mulss xmm3, xmm7
-      addss xmm0, xmm3
-
-      movss xmm4, [rdx + r9]
-      mulss xmm4, xmm7
-      addss xmm1, xmm4
-
-      movss xmm5, [rdx + 2*r9]
-      mulss xmm5, xmm7
-      addss xmm2, xmm5
-
-      add   rcx, 4
-      add   rdx, 4
-      dec   r8d
-      jnz   @@loop
-
-   @@done:
-      mov   rax, dest
-      movss [rax], xmm0
-      movss [rax+4], xmm1
-      movss [rax+8], xmm2
-end;
-{$endif}
-
 // MultiplyVector
 //
 procedure TdaNNSingleMatrix.MultiplyVector(const vector, result : ISingleArray);
 begin
-   Assert(vector.Length = ColumnCount, 'Vector size mismatches matrix row count');
-   Assert(result.Length = RowCount, 'Result size mismatches matrix column count');
+   Assert(vector.Length = ColumnCount, 'Vector size mismatches matrix column count');
+   Assert(result.Length = RowCount, 'Result size mismatches matrix row count');
 
    var resultPtr := result.Ptr;
    var vectorPtr := vector.Ptr;
@@ -576,25 +515,72 @@ begin
                0, // beta
                PSingle(resultPtr), 1 // y, incY
                );
+
    {$else}
 
-   var cdp := FCompiledDotProduct.Ptr;
+   var cdp := FCompiledMultVector.Ptr;
 
-   for var row := 0 to RowCount-1 do
-      resultPtr[row] := TCompiledDotProduct(cdp)(vectorPtr, @FData[ row * FColAlignedCount ]);
-//      resultPtr[row] := daNNDotProduct(vectorPtr, @FData[ row * FColAlignedCount ], ColumnCount);
-//}
-{
-   var row := 0;
-   while row <= RowCount-3 do begin
-      daNNDotProduct3(vectorPtr, @FData[ row * FColAlignedCount ], ColumnCount, FColAlignedCount*4, @resultPtr[row]);
-      Inc(row, 3);
-   end;
-   while row < RowCount do begin
-      resultPtr[row] := daNNDotProduct(vectorPtr, @FData[ row * FColAlignedCount ], ColumnCount);
-      Inc(row);
-   end; //}
+   TCompiledMatVectorMult(cdp)(@FData[0], vectorPtr, resultPtr);
    {$endif}
 end;
+
+// TransposeMultiplyVector
+//
+procedure TdaNNSingleMatrix.TransposeMultiplyVector(const vector, result : ISingleArray);
+begin
+   Assert(vector.Length = RowCount, 'Vector size mismatches matrix row count');
+   Assert(result.Length = ColumnCount, 'Result size mismatches matrix column count');
+
+   var resultPtr := result.Ptr;
+   var vectorPtr := vector.Ptr;
+
+   {$ifdef USE_CBLAS}
+
+   cblas.sgemv(cblasRowMajor, cblasTrans,
+               RowCount, ColumnCount, 1.0, // m, n, alpha
+               @FData[0], ColumnCount,   // a, lda
+               PSingle(vectorPtr), 1, // x, incX
+               0, // beta
+               PSingle(resultPtr), 1 // y, incY
+               );
+
+   {$else}
+   for var col := 0 to ColumnCount-1 do begin
+      var accum : Double;
+      accum := 0;
+      for var row := 0 to RowCount-1 do
+         accum := accum + vectorPtr[row] * GetItem(col, row);
+      resultPtr[col] := accum;
+   end;
+   {$endif}
+end;
+
+// AddScaledVectorToRow
+//
+procedure TdaNNSingleMatrix.AddScaledVectorToRow(scale : Single; const vector : ISingleArray; row : Integer);
+begin
+   Assert(vector.Length = FColCount, 'Mismatched vector length');
+
+   var rowPtr := GetRowPtr(row);
+
+   {$ifdef USE_CBLAS}
+   CBLAS.saxpy(FColCount, scale, PSingle(vector.Ptr), 1, PSingle(rowPtr), 1);
+   {$else}
+   daNNAddScaledOperand(rowPtr, vector.Ptr, scale, FColCount);
+   {$endif}
+end;
+
+// ------------------------------------------------------------------
+// ------------------------------------------------------------------
+// ------------------------------------------------------------------
+initialization
+// ------------------------------------------------------------------
+// ------------------------------------------------------------------
+// ------------------------------------------------------------------
+
+   {$ifdef USE_CBLAS}
+   LoadLibCBLAS;
+   CBLAS.openblas_set_num_threads(1);
+   {$endif}
 
 end.

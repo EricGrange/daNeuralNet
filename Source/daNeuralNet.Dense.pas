@@ -110,7 +110,7 @@ begin
    FWeights := NewSingleMatrix(Previous.Size, Size);
    SetLength(FWeightsPtr, Size);
    for var i := 0 to Size-1 do begin
-      FWeightsPtr[i] := FWeights.RowPtr(i);
+      FWeightsPtr[i] := FWeights.RowPtr[i];
    end;
 
    if nnboForTraining in options then begin
@@ -161,13 +161,7 @@ begin
 
    if (Previous = nil) or Previous.IsInputLayer then Exit;
 
-   var pDeltas := FDeltas.Ptr;
-   for var node := 0 to Previous.Size-1 do begin
-      var error : Double := 0.0;
-      for var k := 0 to Size-1 do
-         error := error + pDeltas[k] * FWeightsPtr[k][node];
-      FInputErrors[node] := error;
-   end;
+   FWeights.TransposeMultiplyVector(FDeltas, FInputErrors);
 
    Previous.CalculateDeltas(FInputErrors);
 end;
@@ -186,14 +180,12 @@ end;
 procedure TdaNNDenseLayer.AdjustWeightsDirect;
 begin
    var rate := LearningRate * Model.LearningRateScale;
-   var incoming := Previous.Outputs.Ptr;
+   var incomingPtr := Previous.Outputs.Ptr;
    var biases := FBiases.Ptr;
    for var node := 0 to Size-1 do begin
       var delta : Single := rate * FDeltas[node];
       if delta <> 0 then begin
-         var weights := FWeightsPtr[node];
-         daNNAddScaledOperand(weights, incoming, delta, Previous.Size);
-         biases[node] := biases[node] + delta;
+         FWeights.AddScaledVectorToRow(delta, Previous.Outputs, node);
       end;
    end;
 end;

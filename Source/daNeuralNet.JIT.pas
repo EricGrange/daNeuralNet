@@ -50,13 +50,138 @@ type
 
 type
    TCompiledDotProduct = function (p1, p2 : PSingleArray) : Single; register;
-function CompileDotProduct(nb : Integer) : IdaNNJIT;
+   TCompiledMatVectorMult = procedure (pMat, pVec, pRes : PSingleArray); register;
+
+function CompileMultVectorAVX(nbCol, nbRow : Integer) : IdaNNJIT;
+function CompileDotProductSSE(nb : Integer) : IdaNNJIT;
 
 implementation
 
-// CompileDotProduct
+// CompileMultVectorAVX
 //
-function CompileDotProduct(nb : Integer) : IdaNNJIT;
+function CompileMultVectorAVX(nbCol, nbRow : Integer) : IdaNNJIT;
+begin
+   // matrix in RCX
+   // vector in RDX
+   // result in R8
+
+   var nnJIT := TdaNNJIT.Create;
+   Result := nnJIT;
+   var jit := nnJIT.Buffer;
+
+   if nbRow > 4 then
+      jit._mov_reg_reg(gprR9, gprRDX);
+
+   for var k := 0 to 1 do begin
+
+      var rowLoopStep := 4;
+      if rowLoopStep > nbRow then
+         rowLoopStep := nbRow;
+
+      var rowLoopCount := nbRow div rowLoopStep;
+
+      if rowLoopCount > 1 then
+         jit._mov_reg_dword(gprEBX, rowLoopCount);
+      var rowLoopRef := jit.Position;
+
+      var colLoopStep := 8;
+      if nbCol >= colLoopStep then begin
+
+         jit._mov_reg_dword(gprEAX, nbCol div colLoopStep);
+
+         for var i := 0 to rowLoopStep-1 do
+            jit._vxorps(TymmRegister(Ord(ymm0) + i));
+
+         var colLoopRef := jit.Position;
+
+         jit._vmovups_ptr_reg(ymm7, gprRDX, 0);
+
+         for var i := 0 to rowLoopStep-1 do begin
+            jit._vfmadd231ps_ptr_reg(
+               TymmRegister(Ord(ymm0) + i), ymm7,
+               gprRCX, i*nbCol*SizeOf(Single)
+            );
+         end;
+
+         jit._add_reg_int32(gprRDX, colLoopStep*SizeOf(Single));
+         jit._add_reg_int32(gprRCX, colLoopStep*SizeOf(Single));
+         jit._dec(gprEAX);
+         jit._jump(flagsNZ, colLoopRef-jit.Position);
+
+         for var i := 0 to rowLoopStep-1 do begin
+            jit._vextract128_high(TxmmRegister(rowLoopStep + i), TymmRegister(i));
+            jit._addps_reg_reg(TxmmRegister(i), TxmmRegister(rowLoopStep + i));
+         end;
+
+      end else begin
+
+         for var i := 0 to rowLoopStep-1 do
+            jit._xorps_reg_reg(TxmmRegister(i), TxmmRegister(i));
+
+      end;
+
+      var colRemaining := nbCol mod colLoopStep;
+      var colOffset := 0;
+      while colRemaining >= 4 do begin
+         jit._movups_reg_ptr_reg(xmm7, gprRDX, colOffset);
+         for var i := 0 to rowLoopStep-1 do begin
+            jit._vfmadd231ps_ptr_reg(
+               TxmmRegister(i), xmm7,
+               gprRCX, colOffset + i*nbCol*SizeOf(Single)
+            );
+         end;
+         Inc(colOffset, 4*SizeOf(Single));
+         Dec(colRemaining, 4);
+      end;
+
+      for var i := 0 to rowLoopStep-1 do begin
+         var reg := TxmmRegister(i);
+         jit._haddps(reg, reg);
+      end;
+      for var i := 0 to rowLoopStep-1 do begin
+         var reg := TxmmRegister(i);
+         jit._haddps(reg, reg);
+      end;
+
+      while colRemaining > 0 do begin
+         jit._movss_reg_ptr_reg(xmm7, gprRDX, colOffset);
+         for var i := 0 to rowLoopStep-1 do begin
+            jit._vfmadd231ss_ptr_reg(
+               TxmmRegister(i), xmm7,
+               gprRCX, colOffset + i*nbCol*SizeOf(Single)
+            );
+         end;
+         Inc(colOffset, SizeOf(Single));
+         Dec(colRemaining);
+      end;
+
+      for var i := 0 to rowLoopStep-1 do
+         jit._movss_ptr_reg_reg(gprR8, i*SizeOf(Single), TxmmRegister(i));
+
+      if k = 0 then begin
+         nbRow := nbRow mod rowLoopStep;
+
+         if (nbRow > 0) or (rowLoopCount > 1) then begin
+            jit._add_reg_int32(gprRCX, SizeOf(Single)*(nbCol*(rowLoopStep-1) + nbCol mod colLoopStep));
+            jit._mov_reg_reg(gprRDX, gprR9);
+            jit._add_reg_int32(gprR8, rowLoopStep*SizeOf(Single));
+         end;
+
+         if rowLoopCount > 1 then begin
+            jit._dec(gprEBX);
+            jit._jump(flagsNZ, rowLoopRef-jit.Position);
+         end;
+
+         if nbRow = 0 then break;
+      end;
+   end;
+
+   nnJIT.Build;
+end;
+
+// CompileDotProductSSE
+//
+function CompileDotProductSSE(nb : Integer) : IdaNNJIT;
 begin
    var nnJIT := TdaNNJIT.Create;
    Result := nnJIT;
@@ -106,20 +231,22 @@ begin
       jit._addps_reg_reg(xmm0, xmm2);
    end;
 
-   if nb >= 4 then begin
+   while nb >= 4 do begin
       useSimd := True;
       jit._movups_reg_ptr_reg(xmm4, gprRCX, tailOffset);
       jit._mulps_reg_ptr_reg(xmm4, gprRDX, tailOffset);
       jit._addps_reg_reg(xmm0, xmm4);
       Inc(tailOffset, 4*SizeOf(Single));
-      nb := nb and 3;
+      Dec(nb, 4);
    end;
 
    if useSimd then begin
-      jit._movshdup(xmm7, xmm0);
-      jit._addps_reg_reg(xmm0, xmm7);
-      jit._movhlps(xmm7, xmm0);
-      jit._addss(xmm0, xmm7);
+//      jit._movshdup(xmm7, xmm0);
+//      jit._addps_reg_reg(xmm0, xmm7);
+//      jit._movhlps(xmm7, xmm0);
+//      jit._addss(xmm0, xmm7);
+      jit._haddps(xmm0, xmm0);
+      jit._haddps(xmm0, xmm0);
    end;
 
    for var i := 0 to nb-1 do begin
@@ -160,7 +287,7 @@ begin
    Assert(FPtr = nil, 'Already built');
 
    FBuffer._ret;
-   FBuffer._nop(7);
+   FBuffer._nop(7-(FBuffer.Position and 7)); // nop fill 8 bytes line
 
    var opcodes := FBuffer.ToRawBytes;
    var n := Length(opcodes);

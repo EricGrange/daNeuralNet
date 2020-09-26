@@ -17,7 +17,11 @@
 unit daNeuralNet.Math;
 
 {$i daNN.inc}
-{.$define USE_CBLAS}
+{$define USE_CBLAS}
+
+{$ifdef USE_CBLAS}
+   {.$define USE_CBLAS_FOR_SGEMV}
+{$endif}
 
 interface
 
@@ -87,10 +91,10 @@ implementation
 
 uses
    {$ifdef USE_CBLAS}
-   LibCBLAS
-   {$else}
+   LibCBLAS,
+   {$endif}
    daNeuralNet.JIT
-   {$endif};
+   ;
 
 // daNNDotProduct
 //
@@ -390,7 +394,7 @@ type
          FData : PSingleArray; // base of highly-aligned array
          FRowCount, FColCount : Integer;
          FColAlignedCount : Integer;
-         {$ifndef USE_CBLAS}
+         {$ifndef USE_CBLAS_FOR_SGEMV}
          FCompiledMultVector : IdaNNJIT;
          {$endif}
 
@@ -433,7 +437,7 @@ begin
    FBuffer := AllocMem(FRowCount * FColAlignedCount * SizeOf(Single) + 32);
    FData := Pointer((NativeUInt(FBuffer) + 31) and (NativeUInt(-1) - $1F));
 
-   {$ifndef USE_CBLAS}
+   {$ifndef USE_CBLAS_FOR_SGEMV}
    FCompiledMultVector := CompileMultVectorAVX(ColumnCount, RowCount);
    {$endif}
 end;
@@ -506,7 +510,7 @@ begin
    var resultPtr := result.Ptr;
    var vectorPtr := vector.Ptr;
 
-   {$ifdef USE_CBLAS}
+   {$ifdef USE_CBLAS_FOR_SGEMV}
 
    cblas.sgemv(cblasRowMajor, cblasNoTrans,
                RowCount, ColumnCount, 1.0, // m, n, alpha

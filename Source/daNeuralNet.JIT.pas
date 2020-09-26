@@ -87,7 +87,9 @@ begin
       var colLoopStep := 8;
       if nbCol >= colLoopStep then begin
 
-         jit._mov_reg_dword(gprEAX, nbCol div colLoopStep);
+         var colLoopCount := nbCol div colLoopStep;
+         if colLoopCount > 1 then
+            jit._mov_reg_dword(gprEAX, colLoopCount);
 
          for var i := 0 to rowLoopStep-1 do
             jit._vxorps(TymmRegister(Ord(ymm0) + i));
@@ -105,8 +107,10 @@ begin
 
          jit._add_reg_int32(gprRDX, colLoopStep*SizeOf(Single));
          jit._add_reg_int32(gprRCX, colLoopStep*SizeOf(Single));
-         jit._dec(gprEAX);
-         jit._jump(flagsNZ, colLoopRef-jit.Position);
+         if colLoopCount > 1 then begin
+            jit._dec(gprEAX);
+            jit._jump(flagsNZ, colLoopRef-jit.Position);
+         end;
 
          for var i := 0 to rowLoopStep-1 do begin
             jit._vextract128_high(TxmmRegister(rowLoopStep + i), TymmRegister(i));

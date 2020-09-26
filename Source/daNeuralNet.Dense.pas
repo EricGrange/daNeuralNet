@@ -107,7 +107,7 @@ begin
    Assert(Previous <> nil, ClassName + ' requires a previous layer');
 
    FBiases := NewSingleArray(Size);
-   FWeights := NewSingleMatrix(Previous.Size, Size);
+   FWeights := NewSingleMatrix(Previous.Size, Size, [ moPacked ]);
    SetLength(FWeightsPtr, Size);
    for var i := 0 to Size-1 do begin
       FWeightsPtr[i] := FWeights.RowPtr[i];
@@ -186,6 +186,7 @@ begin
       var delta : Single := rate * FDeltas[node];
       if delta <> 0 then begin
          FWeights.AddScaledVectorToRow(delta, Previous.Outputs, node);
+         biases[node] := biases[node] + delta;
       end;
    end;
 end;

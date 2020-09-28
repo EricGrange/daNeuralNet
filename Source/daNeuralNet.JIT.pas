@@ -37,6 +37,7 @@ type
          FBuffer : Tx86_Platform_WriteOnlyStream;
          FPtr : Pointer;
          FSize : Integer;
+         FAlteredXMM : TxmmRegisters;
 
       public
          constructor Create;
@@ -48,6 +49,9 @@ type
 
          property Buffer : Tx86_Platform_WriteOnlyStream read FBuffer;
          function Position : Integer;
+
+         property AlteredXMM : TxmmRegisters read FAlteredXMM write FAlteredXMM;
+         procedure Alter(reg : TxmmRegister);
    end;
 
 
@@ -55,7 +59,6 @@ type
    TCompiledDotProduct = function (p1, p2 : PSingleArray) : Single; register;
    TCompiledMatVectorMult = procedure (pMat, pVec, pRes : PSingleArray); register;
 
-function CompileMultVectorAVX_enh(nbCol, nbRow : Integer; colAlignedSize : Integer = 0) : IdaNNJIT;
 function CompileMultVectorAVX(nbCol, nbRow : Integer; colAlignedSize : Integer = 0) : IdaNNJIT;
 function CompileDotProductSSE(nb : Integer) : IdaNNJIT;
 
@@ -63,7 +66,7 @@ implementation
 
 // CompileMultVectorAVX
 //
-function CompileMultVectorAVX_enh(nbCol, nbRow : Integer; colAlignedSize : Integer = 0) : IdaNNJIT;
+function CompileMultVectorAVX(nbCol, nbRow : Integer; colAlignedSize : Integer = 0) : IdaNNJIT;
 begin
    // matrix in RCX
    // vector in RDX
@@ -98,9 +101,9 @@ begin
 
       if colLoopCount > 1 then begin
 
-         jit._vmovups_ptr_reg(ymm14, gprRDX, 0);
+         jit._vmovups_ptr_reg(ymm5, gprRDX, 0);
          for var i := 0 to rowLoopStep-1 do begin
-            jit._vmulps_ptr_reg(TymmRegister(i), ymm14, gprRCX, i*nbCol*SizeOf(Single));
+            jit._vmulps_ptr_reg(TymmRegister(i), ymm5, gprRCX, i*nbCol*SizeOf(Single));
          end;
          jit._add_reg_int32(gprRDX, colLoopStep*SizeOf(Single));
          jit._add_reg_int32(gprRCX, colLoopStep*SizeOf(Single));
@@ -111,11 +114,11 @@ begin
 
             var colLoopRef := jit.Position;
 
-            jit._vmovups_ptr_reg(ymm15, gprRDX, 0);
+            jit._vmovups_ptr_reg(ymm5, gprRDX, 0);
 
             for var i := 0 to rowLoopStep-1 do begin
                jit._vfmadd231ps_ptr_reg(
-                  TymmRegister(i), ymm15, gprRCX, i*nbCol*SizeOf(Single)
+                  TymmRegister(i), ymm5, gprRCX, i*nbCol*SizeOf(Single)
                );
             end;
 
@@ -128,9 +131,8 @@ begin
          end;
 
          for var i := 0 to rowLoopStep-1 do begin
-            var highBufReg := TxmmRegister(rowLoopStep + i);
-            jit._vextract128_high(highBufReg, TymmRegister(i));
-            jit._vaddps(TxmmRegister(i), TxmmRegister(i), highBufReg);
+            jit._vextract128_high(xmm5, TymmRegister(i));
+            jit._vaddps(TxmmRegister(i), TxmmRegister(i), xmm5);
          end;
 
       end else begin
@@ -139,9 +141,9 @@ begin
          Inc(colRemaining, colCatchup);
 
          if colRemaining >= 4 then begin
-            jit._vmovups_ptr_reg(xmm9, gprRDX, colOffset);
+            jit._vmovups_ptr_reg(xmm5, gprRDX, colOffset);
             for var i := 0 to rowLoopStep-1 do
-               jit._vmulps_ptr_reg(TxmmRegister(i), xmm9, gprRCX, i*nbCol*SizeOf(Single));
+               jit._vmulps_ptr_reg(TxmmRegister(i), xmm5, gprRCX, i*nbCol*SizeOf(Single));
             Inc(colOffset, 4*SizeOf(Single));
             Dec(colRemaining, 4);
          end else begin
@@ -152,10 +154,10 @@ begin
       end;
 
       while colRemaining >= 4 do begin
-         jit._vmovups_ptr_reg(xmm10, gprRDX, colOffset);
+         jit._vmovups_ptr_reg(xmm5, gprRDX, colOffset);
          for var i := 0 to rowLoopStep-1 do begin
             jit._vfmadd231ps_ptr_reg(
-               TxmmRegister(i), xmm10, gprRCX, colOffset + i*nbCol*SizeOf(Single)
+               TxmmRegister(i), xmm5, gprRCX, colOffset + i*nbCol*SizeOf(Single)
             );
          end;
          Inc(colOffset, 4*SizeOf(Single));
@@ -164,18 +166,17 @@ begin
 
       for var i := 0 to rowLoopStep-1 do begin
          var reg := TxmmRegister(i);
-         var bufReg := TxmmRegister(rowLoopStep+i);
-         jit._vmovshdup(bufReg, reg);
-         jit._vaddps(reg, bufReg, reg);
-         jit._vmovhlps(bufReg, bufReg, reg);
-         jit._vaddss(reg, reg, bufReg);
+         jit._vmovshdup(xmm5, reg);
+         jit._vaddps(reg, xmm5, reg);
+         jit._vmovhlps(xmm5, xmm5, reg);
+         jit._vaddss(reg, reg, xmm5);
       end;
 
       while colRemaining > 0 do begin
-         jit._vmovss_reg_ptr_reg(xmm8, gprRDX, colOffset);
+         jit._vmovss_reg_ptr_reg(xmm5, gprRDX, colOffset);
          for var i := 0 to rowLoopStep-1 do begin
             jit._vfmadd231ss_ptr_reg(
-               TxmmRegister(i), xmm8,
+               TxmmRegister(i), xmm5,
                gprRCX, colOffset + i*nbCol*SizeOf(Single)
             );
          end;
@@ -191,139 +192,6 @@ begin
 
          if (nbRow > 0) or (rowLoopCount > 1) then begin
             jit._add_reg_int32(gprRCX, SizeOf(Single)*(nbCol*(rowLoopStep-1) + nbCol mod colLoopStep + colCatchup));
-            jit._mov_reg_reg(gprRDX, gprR9);
-            jit._add_reg_int32(gprR8, rowLoopStep*SizeOf(Single));
-         end;
-
-         if rowLoopCount > 1 then begin
-            jit._dec(gprR10d);
-            jit._jump(flagsNZ, rowLoopRef-jit.Position);
-         end;
-
-         if nbRow = 0 then break;
-      end;
-   end;
-
-   jit._vzeroupper;
-
-   nnJIT.Build;
-end;
-
-// CompileMultVectorAVX
-//
-function CompileMultVectorAVX(nbCol, nbRow : Integer; colAlignedSize : Integer = 0) : IdaNNJIT;
-begin
-   // matrix in RCX
-   // vector in RDX
-   // result in R8
-
-   var nnJIT := TdaNNJIT.Create;
-   Result := nnJIT;
-   var jit := nnJIT.Buffer;
-
-   if nbRow > 4 then
-      jit._mov_reg_reg(gprR9, gprRDX);
-
-   var colLoopStep := 8;
-
-   for var k := 0 to 1 do begin
-
-      var rowLoopStep := 4;
-      if rowLoopStep > nbRow then
-         rowLoopStep := nbRow;
-
-      var rowLoopCount := nbRow div rowLoopStep;
-
-      if rowLoopCount > 1 then
-         jit._mov_reg_dword(gprR10d, rowLoopCount);
-      var rowLoopRef := jit.Position;
-
-      var colRemaining := nbCol mod colLoopStep;
-      var colOffset := 0;
-
-      var colLoopCount := nbCol div colLoopStep;
-
-      if colLoopCount > 0 then begin
-
-         if colLoopCount > 1 then
-            jit._mov_reg_dword(gprEAX, colLoopCount);
-
-         for var i := 0 to rowLoopStep-1 do begin
-            jit._vxorps(TymmRegister(i));
-         end;
-
-         var colLoopRef := jit.Position;
-
-         jit._vmovups_ptr_reg(ymm15, gprRDX, 0);
-
-         for var i := 0 to rowLoopStep-1 do begin
-            jit._vfmadd231ps_ptr_reg(
-               TymmRegister(i), ymm15,
-               gprRCX, i*nbCol*SizeOf(Single)
-            );
-         end;
-
-         jit._add_reg_int32(gprRDX, colLoopStep*SizeOf(Single));
-         jit._add_reg_int32(gprRCX, colLoopStep*SizeOf(Single));
-         if colLoopCount > 1 then begin
-            jit._dec(gprEAX);
-            jit._jump(flagsNZ, colLoopRef-jit.Position);
-         end;
-
-         for var i := 0 to rowLoopStep-1 do begin
-            var highBufReg := TxmmRegister(4 + i);
-            jit._vextract128_high(highBufReg, TymmRegister(i));
-            jit._vaddps(TxmmRegister(i), TxmmRegister(i), highBufReg);
-         end;
-
-      end else begin
-
-         for var i := 0 to rowLoopStep-1 do
-            jit._xorps_reg_reg(TxmmRegister(i), TxmmRegister(i));
-
-      end;
-
-      while colRemaining >= 4 do begin
-         jit._vmovups_ptr_reg(xmm8, gprRDX, colOffset);
-         for var i := 0 to rowLoopStep-1 do begin
-            jit._vfmadd231ps_ptr_reg(
-               TxmmRegister(i), xmm8,
-               gprRCX, colOffset + i*nbCol*SizeOf(Single)
-            );
-         end;
-         Inc(colOffset, 4*SizeOf(Single));
-         Dec(colRemaining, 4);
-      end;
-
-      for var i := 0 to rowLoopStep-1 do begin
-         var reg := TxmmRegister(i);
-         var bufReg := TxmmRegister(4+i);
-         jit._vmovshdup(bufReg, reg);
-         jit._vaddps(reg, bufReg, reg);
-         jit._vmovhlps(bufReg, bufReg, reg);
-         jit._vaddss(reg, reg, bufReg);
-      end;
-
-      while colRemaining > 0 do begin
-         jit._vmovss_reg_ptr_reg(xmm8, gprRDX, colOffset);
-         for var i := 0 to rowLoopStep-1 do begin
-            jit._vfmadd231ss_ptr_reg(
-               TxmmRegister(i), xmm8,
-               gprRCX, colOffset + i*nbCol*SizeOf(Single)
-            );
-         end;
-         Inc(colOffset, SizeOf(Single));
-         Dec(colRemaining);
-      end;
-
-      for var i := 0 to rowLoopStep-1 do
-         jit._vmovss_ptr_reg_reg(gprR8, i*SizeOf(Single), TxmmRegister(i));
-
-      if k = 0 then begin
-         nbRow := nbRow mod rowLoopStep;
-
-         if (nbRow > 0) or (rowLoopCount > 1) then begin
-            jit._add_reg_int32(gprRCX, SizeOf(Single)*(nbCol*(rowLoopStep-1) + nbCol mod colLoopStep));
             jit._mov_reg_reg(gprRDX, gprR9);
             jit._add_reg_int32(gprR8, rowLoopStep*SizeOf(Single));
          end;
@@ -404,10 +272,10 @@ begin
    end;
 
    if useSimd then begin
-      jit._movshdup(xmm7, xmm0);
-      jit._addps_reg_reg(xmm0, xmm7);
-      jit._movhlps(xmm7, xmm0);
-      jit._addss(xmm0, xmm7);
+      jit._movshdup(xmm5, xmm0);
+      jit._addps_reg_reg(xmm0, xmm5);
+      jit._movhlps(xmm5, xmm0);
+      jit._addss(xmm0, xmm5);
    end;
 
    for var i := 0 to nb-1 do begin
@@ -447,10 +315,35 @@ procedure TdaNNJIT.Build;
 begin
    Assert(FPtr = nil, 'Already built');
 
-   FBuffer._ret;
-   FBuffer._nop(7-(FBuffer.Position and 7)); // nop fill 8 bytes line
-
    var opcodes := FBuffer.ToRawBytes;
+
+   if Tx86_Platform_WriteOnlyStream = Tx86_64_WriteOnlyStream then begin
+      var nbAlteredXmm := 0;
+      for var i := xmm6 to xmm15 do
+         if i in FAlteredXMM then
+            Inc(nbAlteredXmm);
+      if nbAlteredXmm > 0 then begin
+         var stackPush := Tx86_64_WriteOnlyStream.Create;
+         var stackPop := Tx86_64_WriteOnlyStream.Create;
+         try
+            stackPush._sub_reg_int32(gprRSP, nbAlteredXmm*16);
+            var offset := 0;
+            for var i := xmm6 to xmm15 do begin
+               stackPush._vmovups_ptr_reg_reg(gprRSP, offset, i);
+               stackPop._vmovups_ptr_reg(i, gprRSP, offset);
+               Inc(offset, 16);
+            end;
+            stackPop._add_reg_int32(gprESP, nbAlteredXmm*128);
+            opcodes := stackPush.ToRawBytes + opcodes + stackPop.ToRawBytes;
+         finally
+            stackPush.Free;
+            stackPop.Free;
+         end;
+      end else
+   end;
+
+   opcodes := opcodes + AnsiChar($C3) + AnsiChar($90) + AnsiChar($90) + AnsiChar($90); // ret nop nop nop
+
    FSize := Length(opcodes);
    FPtr := VirtualAlloc(nil, FSize, MEM_COMMIT, PAGE_READWRITE);
    System.Move(Pointer(opcodes)^, FPtr^, FSize);
@@ -479,6 +372,13 @@ end;
 function TdaNNJIT.Position : Integer;
 begin
    Result := FBuffer.Position;
+end;
+
+// Alter
+//
+procedure TdaNNJIT.Alter(reg : TxmmRegister);
+begin
+   Include(FAlteredXMM, reg);
 end;
 
 end.

@@ -21,6 +21,7 @@ unit daNeuralNet.Math;
 
 {$ifdef USE_CBLAS}
    {.$define USE_CBLAS_FOR_SGEMV}
+   {.$define USE_CBLAS_FOR_SGEMM}
 {$endif}
 
 interface
@@ -57,6 +58,8 @@ type
       property Items[col, row : Integer] : Single read GetItem write SetItem; default;
       function GetRowPtr(row : Integer) : PSingleArray;
       property RowPtr[row : Integer] : PSingleArray read GetRowPtr;
+
+      procedure Multiply(const matrix, result : ISingleMatrix);
 
       procedure MultiplyVector(const vector, result : ISingleArray);
       procedure TransposeMultiplyVector(const vector, result : ISingleArray);
@@ -402,14 +405,17 @@ type
          constructor Create(colCount, rowCount : Integer; options: TMatrixOptions);
          destructor Destroy; override;
 
-         function ColumnCount : Integer;
-         function AlignedColumnCount : Integer;
-         function RowCount : Integer;
+         function ColumnCount : Integer; inline;
+         function AlignedColumnCount : Integer; inline;
+         function RowCount : Integer; inline;
          function Count : Integer;
+
          function GetItem(col, row : Integer) : Single;
          procedure SetItem(col, row : Integer; v : Single);
          property Items[col, row : Integer] : Single read GetItem write SetItem; default;
          function GetRowPtr(row : Integer) : PSingleArray;
+
+         procedure Multiply(const matrix, result : ISingleMatrix);
 
          procedure MultiplyVector(const vector, result : ISingleArray);
          procedure TransposeMultiplyVector(const vector, result : ISingleArray);
@@ -498,6 +504,45 @@ function TdaNNSingleMatrix.GetRowPtr(row : Integer) : PSingleArray;
 begin
    Assert(NativeUInt(row) < NativeUInt(FRowCount));
    Result := @FData[ row * FColAlignedCount ];
+end;
+
+// Multiply
+//
+procedure TdaNNSingleMatrix.Multiply(const matrix, result : ISingleMatrix);
+begin
+   Assert(matrix.RowCount = ColumnCount, 'Matrix row count mismatch');
+   Assert(result.ColumnCount = matrix.ColumnCount, 'result column count mismatch');
+   Assert(result.RowCount = RowCount, 'result column count mismatch');
+
+   {$ifdef USE_CBLAS_FOR_SGEMM}
+
+   cblas.sgemm(
+      cblasRowMajor, cblasNoTrans, cblasNoTrans,
+      RowCount, matrix.ColumnCount, ColumnCount,         // m, n, k
+      1, PSingle(FData), ColumnCount,                    // alpha, A, lda
+      PSingle(matrix.RowPtr[0]), matrix.ColumnCount,     // B, ldb
+      0, PSingle(result.RowPtr[0]), matrix.ColumnCount   // beta, C, ldc
+   );
+
+   {$else}
+
+   var kSize := matrix.AlignedColumnCount;
+   var r : Double;
+   for var i := 0 to RowCount-1 do begin
+      var pMat1i := GetRowPtr(i);
+      var pMatRi := result.RowPtr[i];
+      for var j := 0 to matrix.ColumnCount-1 do begin
+         var pMat2j := PSingleArray(@matrix.RowPtr[0][j]);
+         r := pMat1i[0] * pMat2j[0];
+         for var k := 1 to ColumnCount-1 do begin
+            pMat2j := @pMat2j[kSize];
+            r := r + pMat1i[k] * pMat2j[0];
+         end;
+         pMatRi[j] := r;
+      end;
+   end;
+
+   {$endif}
 end;
 
 // MultiplyVector

@@ -8,6 +8,9 @@ This project is currently maintained by Eric Grange (https://delphitools.info).
 
 daNN supports Delphi 10.3, older versions are not supported.
 
+Requires https://bitbucket.org/egrange/dwscript/ for compilation and execution.
+
+
 ## Licensing ##
 
 daNeuralNet is released under Mozilla Public License 2.0.
